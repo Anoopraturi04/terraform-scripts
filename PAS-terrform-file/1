@@ -1,0 +1,181 @@
+#############################################
+# Fetch latest RHEL 8 AMI
+#############################################
+data "aws_ami" "rhel_8" {
+  most_recent = true
+  owners      = ["309956199498"] # Red Hat official
+
+  filter {
+    name   = "name"
+    values = ["RHEL-8.?*_HVM-*-x86_64-*"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "root-device-type"
+    values = ["ebs"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+#############################################
+# Launch Template for core-apps-ng
+#############################################
+resource "aws_launch_template" "core_apps_lt" {
+  name_prefix   = "core-apps-lt-"
+  image_id      = data.aws_ami.rhel_8.id
+  instance_type = "t3.medium"
+  key_name      = "prizm-pas"
+
+  user_data = base64encode(<<EOF
+#!/bin/bash
+set -o xtrace
+/etc/eks/bootstrap.sh ${aws_eks_cluster.eks_cluster.name}
+/opt/aws/bin/cfn-signal --exit-code $? \
+  --stack core-apps-ng \
+  --resource NodeGroup \
+  --region ${var.region}
+EOF
+  )
+  
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 60
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "core-apps-instance"
+    }
+  }
+}
+
+#############################################
+# Launch Template for common-system-ng
+#############################################
+resource "aws_launch_template" "common_system_lt" {
+  name_prefix   = "common-system-lt-"
+  image_id      = data.aws_ami.rhel_8.id
+  instance_type = "t3.medium"
+  key_name      = "prizm-pas"
+
+  user_data = base64encode(<<EOF
+#!/bin/bash
+set -o xtrace
+/etc/eks/bootstrap.sh ${aws_eks_cluster.eks_cluster.name}
+/opt/aws/bin/cfn-signal --exit-code $? \
+  --stack common-system-ng \
+  --resource NodeGroup \
+  --region ${var.region}
+EOF
+  )
+
+
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 60
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "common-system-instance"
+    }
+  }
+}
+
+#############################################
+# EKS Node Group - core-apps-ng
+#############################################
+resource "aws_eks_node_group" "core_apps_ng" {
+  cluster_name    = aws_eks_cluster.eks_cluster.name
+  node_group_name = "core-apps-ng"
+  node_role_arn   = aws_iam_role.eks_nodegroup_role.arn
+  subnet_ids      = module.vpc.private_subnets
+
+  ami_type        = "CUSTOM"
+  capacity_type   = "ON_DEMAND"
+
+  launch_template {
+    id      = aws_launch_template.core_apps_lt.id
+    version = "$Latest"
+  }
+
+  scaling_config {
+    desired_size = 1
+    min_size     = 1
+    max_size     = 1
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks-AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.eks-AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.eks-AmazonEC2ContainerRegistryReadOnly,
+  ]
+
+  tags = {
+    Name = "core-apps-ng"
+  }
+}
+
+#############################################
+# EKS Node Group - common-system-ng
+#############################################
+resource "aws_eks_node_group" "common_system_ng" {
+  cluster_name    = aws_eks_cluster.eks_cluster.name
+  node_group_name = "common-system-ng"
+  node_role_arn   = aws_iam_role.eks_nodegroup_role.arn
+  subnet_ids      = module.vpc.private_subnets
+
+  ami_type        = "CUSTOM"
+  capacity_type   = "ON_DEMAND"
+
+  launch_template {
+    id      = aws_launch_template.common_system_lt.id
+    version = "$Latest"
+  }
+
+  scaling_config {
+    desired_size = 1
+    min_size     = 1
+    max_size     = 2
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks-AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.eks-AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.eks-AmazonEC2ContainerRegistryReadOnly,
+  ]
+
+  tags = {
+    Name = "common-system-ng"
+  }
+}
+
